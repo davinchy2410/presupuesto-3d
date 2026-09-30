@@ -198,22 +198,34 @@ with st.sidebar:
             st.success("¡Ajustes actualizados!")
             st.rerun()
             
-    with st.expander("🎨 Gestor de Filamentos"):
+    with st.expander("🎨 Gestor y Stock de Filamentos"):
         with st.form("nuevo_filamento_form", clear_on_submit=True):
-            nombre_material = st.text_input("Nombre del Material")
-            precio_material = st.number_input("Precio ($)", min_value=0.0, step=100.0)
-            gramos_material = st.number_input("Gramos (g)", min_value=1.0, step=100.0)
+            nombre_material = st.text_input("Nombre del Material (Ej: PLA Negro)")
+            col_f1, col_f2, col_f3 = st.columns(3)
+            with col_f1: precio_material = st.number_input("Precio Rollo ($)", min_value=0.0, step=100.0)
+            with col_f2: gramos_material = st.number_input("Peso Rollo (g)", min_value=1.0, value=1000.0, step=100.0)
+            with col_f3: stock_inicial = st.number_input("Stock Actual (g)", min_value=0.0, value=1000.0, step=100.0)
+            
             submit_btn = st.form_submit_button("Guardar Filamento")
             if submit_btn and nombre_material:
-                st.session_state['filamentos'][nombre_material] = {"precio": precio_material, "gramos": gramos_material}
+                st.session_state['filamentos'][nombre_material] = {"precio": precio_material, "gramos": gramos_material, "stock": stock_inicial}
                 update_user_data()
                 st.success(f"¡{nombre_material} guardado!")
                 st.rerun()
                 
-        st.markdown("**Filamentos Guardados:**")
+        st.markdown("**Inventario Actual:**")
         if st.session_state['filamentos']:
+            # Compatibilidad con datos anteriores
+            for k, v in st.session_state['filamentos'].items():
+                if 'stock' not in v: v['stock'] = 0.0
+
             df_filamentos = pd.DataFrame.from_dict(st.session_state['filamentos'], orient='index')
-            st.dataframe(df_filamentos, use_container_width=True)
+            edited_fil = st.data_editor(df_filamentos, use_container_width=True, key="editor_filamentos")
+            if st.button("💾 Guardar Cambios de Inventario"):
+                st.session_state['filamentos'] = edited_fil.to_dict(orient='index')
+                update_user_data()
+                st.success("¡Stock actualizado!")
+                st.rerun()
             
     with st.expander("👥 Gestor de Clientes (CRM)"):
         with st.form("nuevo_cliente_form", clear_on_submit=True):
@@ -328,19 +340,22 @@ if seleccion_cliente == "-- Cliente Casual --":
 else:
     nombre_cliente = seleccion_cliente
 
-col1, col2 = st.columns(2)
-with col1:
+# Fila 1: Piezas por cama y Tiempo
+row1_col1, row1_col2, row1_col3 = st.columns([2, 1, 1])
+with row1_col1:
     cantidad_piezas = st.number_input("Cantidad de piezas en la cama", min_value=1, value=1, step=1, key="in_cantidad_piezas")
+with row1_col2:
+    horas_impresion = st.number_input("Horas (impresión)", min_value=0, value=2, step=1, key="in_horas")
+with row1_col3:
+    minutos_impresion = st.number_input("Minutos", min_value=0, max_value=59, value=30, step=1, key="in_minutos")
+
+tiempo_impresion = horas_impresion + (minutos_impresion / 60.0)
+
+# Fila 2: Total del pedido y Cambios de color
+row2_col1, row2_col2 = st.columns(2)
+with row2_col1:
     cantidad_total_pedido = st.number_input("Cantidad total del pedido (piezas)", min_value=1, value=300, step=1, key="in_cantidad_total")
-with col2:
-    st.write("Tiempo de impresión por cama")
-    col_t1, col_t2 = st.columns(2)
-    with col_t1:
-        horas_impresion = st.number_input("Horas", min_value=0, value=2, step=1, key="in_horas")
-    with col_t2:
-        minutos_impresion = st.number_input("Minutos", min_value=0, max_value=59, value=30, step=1, key="in_minutos")
-    
-    tiempo_impresion = horas_impresion + (minutos_impresion / 60.0)
+with row2_col2:
     cambios_color = st.number_input("Cambios de color manuales (por cama)", value=1, min_value=0, step=1, key="in_cambios")
 
 st.subheader("🛠️ Post-Procesado, Riesgos y Logística")
@@ -416,7 +431,11 @@ precio_unitario_final = precio_total_pedido / cantidad_total_pedido if cantidad_
 st.info(f"**📊 Logística de Producción (Uso Interno)**\n- Camas totales a imprimir: {camas_necesarias}\n- Consumo total estimado: {total_filamento_gramos:,.1f} g ({(total_filamento_gramos/1000):,.2f} kg)\n- Tiempo total de máquina: {tiempo_formateado}")
 
 for color_data in colores_data:
-    st.write(f"🔹 Consumo total de {color_data['filamento']}: {color_data['gramos'] * camas_necesarias:,.1f} g")
+    consumo_c = color_data['gramos'] * camas_necesarias
+    fil_name = color_data['filamento']
+    stock_actual = st.session_state['filamentos'][fil_name].get('stock', 0)
+    alerta = " ⚠️ ¡STOCK INSUFICIENTE!" if stock_actual < consumo_c else ""
+    st.write(f"🔹 Consumo total de {fil_name}: {consumo_c:,.1f} g *(Stock disponible: {stock_actual:,.1f} g)* {alerta}")
 
 st.divider()
 col_res1, col_res2, col_res3, col_res4 = st.columns(4)
@@ -478,8 +497,16 @@ with col_btn1:
                 "Estado": "🔴 Pendiente"
             }
             st.session_state['sales_history'].append(nuevo_pedido)
+            
+            # Descontar stock automáticamente
+            for color_data in colores_data:
+                fil_name_usado = color_data['filamento']
+                consumo_total_color = color_data['gramos'] * camas_necesarias
+                if 'stock' in st.session_state['filamentos'][fil_name_usado]:
+                    st.session_state['filamentos'][fil_name_usado]['stock'] -= consumo_total_color
+                    
             update_user_data()
-            st.success("¡Pedido registrado en la nube de forma segura!")
+            st.success("¡Pedido registrado y stock descontado automáticamente!")
 
 with col_btn2:
     st.button("🔄 Nueva Cotización", type="secondary", use_container_width=True, on_click=reset_cotizacion)
