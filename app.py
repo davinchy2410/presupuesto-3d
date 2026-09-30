@@ -3,6 +3,7 @@ import pandas as pd
 import math
 import os
 import json
+import uuid
 from datetime import datetime
 from fpdf import FPDF
 import hashlib
@@ -58,22 +59,26 @@ def register_user(username, password, company_name):
             "password": hashed,
             "company_name": company_name,
             "filaments": default_filaments,
-            "sales_history": []
+            "sales_history": [],
+            "clients": [],
+            "currency": "$"
         }).execute()
         return True, "Registro exitoso."
     except Exception as e:
         return False, f"Error al registrar: {e}"
 
-def update_user_data(username, company_name, filaments, sales_history):
+def update_user_data():
     supabase.table('app_users').update({
-        "company_name": company_name,
-        "filaments": filaments,
-        "sales_history": sales_history
-    }).eq('username', username).execute()
+        "company_name": st.session_state['company_name'],
+        "filaments": st.session_state['filamentos'],
+        "sales_history": st.session_state['sales_history'],
+        "clients": st.session_state['clients'],
+        "currency": st.session_state['currency']
+    }).eq('username', st.session_state['user']).execute()
 
 
 # --- Generador de PDF ---
-def generar_pdf(empresa, cliente, fecha, detalle_colores, cantidad, horas, precio_unitario, precio_total, tipo_acabado):
+def generar_pdf(empresa, cliente, fecha, detalle_colores, cantidad, horas, precio_total_sin_envio, precio_total, tipo_acabado, descuento, envio, moneda):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", 'B', 16)
@@ -88,14 +93,19 @@ def generar_pdf(empresa, cliente, fecha, detalle_colores, cantidad, horas, preci
     pdf.cell(0, 10, f"- Cantidad total de piezas: {cantidad}", ln=True)
     pdf.cell(0, 10, f"- Materiales y colores: {detalle_colores}", ln=True)
     pdf.cell(0, 10, f"- Acabado: {tipo_acabado}", ln=True)
-    pdf.cell(0, 10, f"- Tiempo estimado de producción: {horas:,.1f} horas", ln=True)
+    pdf.cell(0, 10, f"- Tiempo estimado de produccion: {horas:,.1f} horas", ln=True)
     pdf.ln(5)
-    pdf.cell(0, 10, f"Precio por unidad: ${precio_unitario:,.0f}", ln=True)
+    pdf.cell(0, 10, f"Subtotal: {moneda}{precio_total_sin_envio:,.0f}", ln=True)
+    if descuento > 0:
+        pdf.cell(0, 10, f"Descuento ({descuento}%): -{moneda}{(precio_total_sin_envio * (descuento/100)):,.0f}", ln=True)
+    if envio > 0:
+        pdf.cell(0, 10, f"Costo de Envio: {moneda}{envio:,.0f}", ln=True)
+        
     pdf.set_font("Arial", 'B', 14)
-    pdf.cell(0, 10, f"Precio Total del Pedido: ${precio_total:,.0f}", ln=True)
+    pdf.cell(0, 10, f"Precio Total del Pedido: {moneda}{precio_total:,.0f}", ln=True)
     pdf.ln(20)
     pdf.set_font("Arial", 'I', 10)
-    pdf.multi_cell(0, 10, "Validez del presupuesto: 15 días. Presupuesto sujeto a disponibilidad de material. Quedamos a su entera disposición.")
+    pdf.multi_cell(0, 10, "Validez del presupuesto: 15 dias. Presupuesto sujeto a disponibilidad de material. Quedamos a su entera disposicion.")
     return pdf.output(dest='S').encode('latin-1')
 
 def reset_cotizacion():
@@ -130,6 +140,8 @@ if st.session_state['user'] is None:
                     st.session_state['company_name'] = user_data['company_name']
                     st.session_state['filamentos'] = user_data.get('filaments', {})
                     st.session_state['sales_history'] = user_data.get('sales_history', [])
+                    st.session_state['clients'] = user_data.get('clients', [])
+                    st.session_state['currency'] = user_data.get('currency', '$')
                     st.success("¡Bienvenido!")
                     st.rerun()
                 else:
@@ -176,10 +188,12 @@ with st.sidebar:
     
     with st.expander("🛠️ Personalizar Empresa"):
         new_company = st.text_input("Nombre de la Empresa", value=st.session_state['company_name'])
-        if st.button("Actualizar Empresa", use_container_width=True):
+        new_currency = st.text_input("Símbolo de Moneda (ej. $, €, ARS, MXN)", value=st.session_state.get('currency', '$'))
+        if st.button("Actualizar Ajustes", use_container_width=True):
             st.session_state['company_name'] = new_company
-            update_user_data(st.session_state['user'], st.session_state['company_name'], st.session_state['filamentos'], st.session_state['sales_history'])
-            st.success("¡Nombre actualizado!")
+            st.session_state['currency'] = new_currency
+            update_user_data()
+            st.success("¡Ajustes actualizados!")
             st.rerun()
             
     with st.expander("🎨 Gestor de Filamentos"):
@@ -190,7 +204,7 @@ with st.sidebar:
             submit_btn = st.form_submit_button("Guardar Filamento")
             if submit_btn and nombre_material:
                 st.session_state['filamentos'][nombre_material] = {"precio": precio_material, "gramos": gramos_material}
-                update_user_data(st.session_state['user'], st.session_state['company_name'], st.session_state['filamentos'], st.session_state['sales_history'])
+                update_user_data()
                 st.success(f"¡{nombre_material} guardado!")
                 st.rerun()
                 
@@ -199,13 +213,58 @@ with st.sidebar:
             df_filamentos = pd.DataFrame.from_dict(st.session_state['filamentos'], orient='index')
             st.dataframe(df_filamentos, use_container_width=True)
         
-    with st.expander("📈 Historial y Ganancias"):
+    with st.expander("📈 Historial, Agenda y Ganancias (Avanzado)"):
         historial = st.session_state.get('sales_history', [])
         if len(historial) > 0:
             df_ventas = pd.DataFrame(historial)
-            st.dataframe(df_ventas.tail(5), use_container_width=True)
+            
+            st.markdown("### 📋 Gestor de Pedidos")
+            st.caption("Puedes editar el estado de los pedidos o **eliminar filas completas** seleccionándolas y presionando la tecla Delete (Suprimir) o usando el ícono de papelera.")
+            
+            # Asegurar compatibilidad de columnas en historiales viejos
+            if "Estado" not in df_ventas.columns: df_ventas["Estado"] = "🔴 Pendiente"
+            if "Link STL" not in df_ventas.columns: df_ventas["Link STL"] = ""
+            if "ID" not in df_ventas.columns: df_ventas["ID"] = [str(uuid.uuid4()) for _ in range(len(df_ventas))]
+            
+            # Data Editor Mágico (Editable y Borrable)
+            edited_df = st.data_editor(
+                df_ventas,
+                column_config={
+                    "Estado": st.column_config.SelectboxColumn("Estado", options=["🔴 Pendiente", "🟡 Imprimiendo", "🟢 Entregado / Pagado"], required=True),
+                    "Link STL": st.column_config.LinkColumn("Modelo 3D")
+                },
+                disabled=["ID", "Fecha", "Cliente", "Filamentos", "Cantidad Total", "Precio Total", "Tiempo Total (Horas)"],
+                use_container_width=True,
+                num_rows="dynamic", # Permite eliminar filas
+                key="editor_historial"
+            )
+            
+            col_act1, col_act2 = st.columns(2)
+            with col_act1:
+                if st.button("💾 Guardar Cambios en Historial", use_container_width=True):
+                    st.session_state['sales_history'] = edited_df.to_dict('records')
+                    update_user_data()
+                    st.success("¡Historial actualizado permanentemente!")
+                    st.rerun()
+            with col_act2:
+                csv = edited_df.to_csv(index=False).encode('utf-8')
+                st.download_button("📊 Descargar Excel (CSV)", csv, "historial_impresion3d.csv", "text/csv", use_container_width=True)
+            
+            st.divider()
+            st.markdown("### 📊 Análisis de Ganancias")
+            
+            try:
+                df_grafico = df_ventas.copy()
+                df_grafico['Fecha_Obj'] = pd.to_datetime(df_grafico['Fecha'], format='%d/%m/%Y', errors='coerce')
+                df_grafico['Mes'] = df_grafico['Fecha_Obj'].dt.strftime('%Y-%m')
+                ganancias_mes = df_grafico.groupby('Mes')['Precio Total'].sum().reset_index()
+                if not ganancias_mes.empty:
+                    st.bar_chart(data=ganancias_mes, x='Mes', y='Precio Total')
+            except Exception as e:
+                st.caption("No hay suficientes datos con fechas válidas para graficar.")
+            
             total_ganancias = df_ventas["Precio Total"].sum()
-            st.metric("Total Histórico Facturado", f"${total_ganancias:,.2f}")
+            st.metric("Total Histórico Global", f"{st.session_state.get('currency', '$')}{total_ganancias:,.2f}")
         else:
             st.info("Aún no hay ventas registradas.")
 
@@ -213,7 +272,27 @@ st.title("🖨️ Presupuesto de Impresión 3D")
 st.markdown("Calculadora con modelo de cobro híbrido (Material + Tiempo Máquina + Intervención)")
 
 st.header("📦 Datos del Pedido")
-nombre_cliente = st.text_input("Nombre del Cliente o Proyecto", key="in_nombre_cliente")
+
+moneda = st.session_state.get('currency', '$')
+
+# Gestor de Clientes Inline
+nombres_clientes_guardados = [c['nombre'] for c in st.session_state.get('clients', [])]
+opciones_cliente = ["-- Cliente Casual --"] + nombres_clientes_guardados + ["➕ Agregar Nuevo Cliente..."]
+
+seleccion_cliente = st.selectbox("Seleccionar Cliente", opciones_cliente)
+
+if seleccion_cliente == "-- Cliente Casual --":
+    nombre_cliente = st.text_input("Nombre del Cliente (Temporal)", key="in_nombre_cliente")
+elif seleccion_cliente == "➕ Agregar Nuevo Cliente...":
+    nombre_cliente = st.text_input("Nombre del Nuevo Cliente")
+    if st.button("💾 Guardar Cliente en Base de Datos"):
+        if nombre_cliente and nombre_cliente not in nombres_clientes_guardados:
+            st.session_state['clients'].append({"nombre": nombre_cliente})
+            update_user_data()
+            st.success("¡Cliente guardado!")
+            st.rerun()
+else:
+    nombre_cliente = seleccion_cliente
 
 col1, col2 = st.columns(2)
 with col1:
@@ -223,19 +302,24 @@ with col2:
     tiempo_impresion = st.number_input("Tiempo de impresión (horas decimales)", value=2.5, key="in_tiempo")
     cambios_color = st.number_input("Cambios de color manuales (por cama)", value=1, min_value=0, step=1, key="in_cambios")
 
-st.subheader("🛠️ Post-Procesado y Acabado")
-col_acabado1, col_acabado2 = st.columns(2)
+st.subheader("🛠️ Post-Procesado, Riesgos y Logística")
+col_acabado1, col_acabado2, col_acabado3 = st.columns(3)
 with col_acabado1:
     tipo_acabado = st.selectbox("Tipo de Acabado", [
-        "Estándar (Directo de máquina)",
-        "Lijado y Pulido",
-        "Imprimado y Pintado",
-        "Alisado Químico",
-        "Baño de Resina Epóxica",
-        "Otro (Personalizado)"
+        "Estándar (Directo de máquina)", "Lijado y Pulido", "Imprimado y Pintado", "Alisado Químico", "Baño de Resina Epóxica", "Otro"
     ], key="in_tipo_acabado")
 with col_acabado2:
-    costo_extra_acabado = st.number_input("Costo Extra por Acabado (por pieza) $", value=0.0, step=100.0, key="in_costo_acabado")
+    costo_extra_acabado = st.number_input(f"Costo Extra por Acabado (p/u) {moneda}", value=0.0, step=100.0, key="in_costo_acabado")
+with col_acabado3:
+    riesgo_fallo = st.selectbox("Margen de Riesgo (Fallas)", ["Sin riesgo (+0%)", "Riesgo Bajo (+10% material)", "Riesgo Alto (+25% material)"])
+
+col_fin1, col_fin2, col_fin3 = st.columns(3)
+with col_fin1:
+    link_stl = st.text_input("🔗 Enlace del Modelo 3D (Opcional)", placeholder="https://thingiverse.com/...")
+with col_fin2:
+    descuento = st.number_input(f"Descuento Comercial (%)", min_value=0.0, max_value=100.0, value=0.0)
+with col_fin3:
+    costo_envio = st.number_input(f"Costo de Envío {moneda}", value=0.0, step=500.0)
 
 st.subheader("🎨 Desglose de Colores")
 cantidad_colores = st.number_input("Cantidad de colores distintos en la cama", min_value=1, value=2, step=1, key="in_cant_colores")
@@ -259,6 +343,10 @@ for i in range(cantidad_colores):
     datos_fil = st.session_state['filamentos'][fil]
     costo_material_real += gramos * (datos_fil["precio"] / datos_fil["gramos"])
 
+# Aplicar riesgo al material
+if "10%" in riesgo_fallo: costo_material_real *= 1.10
+elif "25%" in riesgo_fallo: costo_material_real *= 1.25
+
 amortizacion_hora = valor_impresora / vida_util if vida_util > 0 else 0
 costo_electrico_hora = consumo * precio_kwh
 costo_total_maquina_hora = amortizacion_hora + costo_electrico_hora + mantenimiento_hora
@@ -267,13 +355,18 @@ cobro_material = costo_material_real * multiplicador
 cobro_maquina = (costo_total_maquina_hora + ganancia_extra) * tiempo_impresion
 cobro_intervencion = cambios_color * precio_cambio_color
 
-precio_final = cobro_material + cobro_maquina + cobro_intervencion
-precio_unitario = (precio_final / cantidad_piezas) + costo_extra_acabado
+precio_final_cama = cobro_material + cobro_maquina + cobro_intervencion
+precio_unitario_base = (precio_final_cama / cantidad_piezas) + costo_extra_acabado
 
 camas_necesarias = math.ceil(cantidad_total_pedido / cantidad_piezas)
 total_filamento_gramos = camas_necesarias * peso_pieza
 total_tiempo_horas = camas_necesarias * tiempo_impresion
-precio_total_pedido = precio_unitario * cantidad_total_pedido
+
+# Descuentos y envíos
+precio_total_sin_envio_desc = precio_unitario_base * cantidad_total_pedido
+valor_descontado = precio_total_sin_envio_desc * (descuento / 100)
+precio_total_pedido = (precio_total_sin_envio_desc - valor_descontado) + costo_envio
+precio_unitario_final = precio_total_pedido / cantidad_total_pedido if cantidad_total_pedido > 0 else 0
 
 st.info(f"**📊 Logística de Producción (Uso Interno)**\n- Camas totales a imprimir: {camas_necesarias}\n- Consumo total estimado: {total_filamento_gramos:,.1f} g ({(total_filamento_gramos/1000):,.2f} kg)\n- Tiempo total de máquina: {total_tiempo_horas:,.1f} horas")
 
@@ -282,12 +375,12 @@ for color_data in colores_data:
 
 st.divider()
 col_res1, col_res2, col_res3, col_res4 = st.columns(4)
-with col_res1: st.metric(label="Costo Material", value=f"${cobro_material:,.2f}")
-with col_res2: st.metric(label="Costo Máquina + Ganancia", value=f"${cobro_maquina:,.2f}")
-with col_res3: st.metric(label="Mano de Obra (Color)", value=f"${cobro_intervencion:,.2f}")
-with col_res4: st.metric(label="Acabado Extra", value=f"${costo_extra_acabado * cantidad_total_pedido:,.2f}")
+with col_res1: st.metric(label="Costo Material", value=f"{moneda}{cobro_material:,.2f}")
+with col_res2: st.metric(label="Costo Máquina + Ganancia", value=f"{moneda}{cobro_maquina:,.2f}")
+with col_res3: st.metric(label="Mano de Obra (Color)", value=f"{moneda}{cobro_intervencion:,.2f}")
+with col_res4: st.metric(label="Acabado Extra", value=f"{moneda}{costo_extra_acabado * cantidad_total_pedido:,.2f}")
 
-st.success(f"### 🏷️ PRECIO SUGERIDO POR PIEZA: ${precio_unitario:,.0f}\n*(Precio Total del Pedido: ${precio_total_pedido:,.0f})*")
+st.success(f"### 🏷️ PRECIO SUGERIDO POR PIEZA: {moneda}{precio_unitario_final:,.0f}\n*(Precio Total del Pedido: {moneda}{precio_total_pedido:,.0f})*")
 
 st.markdown("### 📱 Resumen para Enviar")
 nombres_filamentos = ", ".join(list(set([d['filamento'] for d in colores_data])))
@@ -297,11 +390,13 @@ resumen_whatsapp = f"""¡Hola! 👋 Te paso el presupuesto de tu pedido en impre
 🔹 Materiales: {nombres_filamentos}
 🔹 Acabado: {tipo_acabado}
 
-Precio por unidad: ${precio_unitario:,.0f}
-Total del pedido: ${precio_total_pedido:,.0f}
+Subtotal: {moneda}{precio_total_sin_envio_desc:,.0f}"""
+if descuento > 0: resumen_whatsapp += f"\nDescuento ({descuento}%): -{moneda}{valor_descontado:,.0f}"
+if costo_envio > 0: resumen_whatsapp += f"\nEnvío: {moneda}{costo_envio:,.0f}"
+resumen_whatsapp += f"\n\nTotal del pedido: *{moneda}{precio_total_pedido:,.0f}*"
+resumen_whatsapp += f"\n\nAvísame si avanzamos para agendar la impresión. ¡Saludos!"
 
-Avísame si avanzamos para agendar la impresión. ¡Saludos!"""
-st.text_area("Copia y pega este mensaje en WhatsApp:", value=resumen_whatsapp, height=200)
+st.text_area("Copia y pega este mensaje en WhatsApp:", value=resumen_whatsapp, height=250)
 
 st.divider()
 col_btn1, col_btn2, col_btn3 = st.columns(3)
@@ -312,15 +407,18 @@ with col_btn1:
             st.warning("Por favor, ingresa el Nombre del Cliente.")
         else:
             nuevo_pedido = {
+                "ID": str(uuid.uuid4()),
                 "Fecha": datetime.now().strftime("%d/%m/%Y"),
                 "Cliente": nombre_cliente,
                 "Filamentos": nombres_filamentos,
+                "Link STL": link_stl,
                 "Cantidad Total": cantidad_total_pedido,
                 "Tiempo Total (Horas)": round(total_tiempo_horas, 2),
-                "Precio Total": round(precio_total_pedido, 2)
+                "Precio Total": round(precio_total_pedido, 2),
+                "Estado": "🔴 Pendiente"
             }
             st.session_state['sales_history'].append(nuevo_pedido)
-            update_user_data(st.session_state['user'], st.session_state['company_name'], st.session_state['filamentos'], st.session_state['sales_history'])
+            update_user_data()
             st.success("¡Pedido registrado en la nube de forma segura!")
 
 with col_btn2:
@@ -335,8 +433,11 @@ with col_btn3:
             detalle_colores=nombres_filamentos,
             cantidad=cantidad_total_pedido,
             horas=total_tiempo_horas,
-            precio_unitario=precio_unitario,
+            precio_total_sin_envio=precio_total_sin_envio_desc,
             precio_total=precio_total_pedido,
-            tipo_acabado=tipo_acabado
+            tipo_acabado=tipo_acabado,
+            descuento=descuento,
+            envio=costo_envio,
+            moneda=moneda
         )
         st.download_button(label="📄 Descargar Presupuesto en PDF", data=pdf_bytes, file_name=f"Presupuesto_{nombre_cliente.replace(' ', '_')}.pdf", mime="application/pdf", use_container_width=True)
