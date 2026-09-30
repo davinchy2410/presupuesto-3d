@@ -4,6 +4,7 @@ import math
 import os
 import json
 import uuid
+import ast
 import urllib.parse
 from datetime import datetime
 import time
@@ -454,9 +455,13 @@ with tab2:
         # Acortar IDs largos visualmente
         df_ventas["ID"] = df_ventas["ID"].apply(lambda x: str(x)[:6].upper() if len(str(x)) > 10 else x)
         
+        # Ocultar columnas internas del editor
+        columnas_ocultas = ["Consumo_Gramos", "Stock_Descontado"]
+        df_mostrar = df_ventas.drop(columns=[col for col in columnas_ocultas if col in df_ventas.columns])
+        
         # Data Editor Mágico (Editable y Borrable)
         edited_df = st.data_editor(
-            df_ventas,
+            df_mostrar,
             column_config={
                 "ID": st.column_config.TextColumn("ID", disabled=True),
                 "Proyecto": st.column_config.TextColumn("Proyecto", disabled=False),
@@ -475,26 +480,41 @@ with tab2:
                 df_clean = edited_df.dropna(how='all')
                 df_clean = df_clean[df_clean['ID'].notnull()]
                 
-                nuevos_pedidos = df_clean.to_dict('records')
+                nuevos_pedidos_ui = df_clean.to_dict('records')
                 viejos_pedidos = st.session_state.get('sales_history', [])
                 
-                # Deducción inteligente de stock
-                for nuevo_p in nuevos_pedidos:
-                    viejo_p = next((p for p in viejos_pedidos if p['ID'] == nuevo_p['ID']), None)
+                historial_final = []
+                for nuevo_p_ui in nuevos_pedidos_ui:
+                    viejo_p = next((p for p in viejos_pedidos if p['ID'] == nuevo_p_ui['ID']), None)
                     if viejo_p:
-                        estado_nuevo = nuevo_p.get('Estado', '')
-                        ya_descontado = viejo_p.get('Stock_Descontado', False)
+                        # Actualizar solo los campos que el usuario editó
+                        viejo_p['Estado'] = nuevo_p_ui.get('Estado', viejo_p.get('Estado'))
+                        viejo_p['Proyecto'] = nuevo_p_ui.get('Proyecto', viejo_p.get('Proyecto'))
+                        viejo_p['Link STL'] = nuevo_p_ui.get('Link STL', viejo_p.get('Link STL'))
                         
+                        # Reparación de datos si se corrompieron a string previamente
+                        consumos = viejo_p.get("Consumo_Gramos", {})
+                        if isinstance(consumos, str):
+                            try: consumos = ast.literal_eval(consumos)
+                            except: consumos = {}
+                            viejo_p["Consumo_Gramos"] = consumos
+                            
+                        ya_descontado = viejo_p.get('Stock_Descontado', False)
+                        if isinstance(ya_descontado, str): ya_descontado = (ya_descontado.lower() == 'true')
+                        viejo_p['Stock_Descontado'] = ya_descontado
+                        
+                        estado_nuevo = viejo_p['Estado']
+                        
+                        # Lógica de deducción
                         if estado_nuevo in ["🟡 Imprimiendo", "🟢 Entregado / Pagado"] and not ya_descontado:
-                            consumos = viejo_p.get("Consumo_Gramos", {})
                             for fil, gramos in consumos.items():
                                 if fil in st.session_state['filamentos'] and 'stock' in st.session_state['filamentos'][fil]:
                                     st.session_state['filamentos'][fil]['stock'] -= gramos
-                            nuevo_p['Stock_Descontado'] = True
-                        elif estado_nuevo == "🔴 Pendiente":
-                            nuevo_p['Stock_Descontado'] = ya_descontado # Mantiene el estado
+                            viejo_p['Stock_Descontado'] = True
                             
-                st.session_state['sales_history'] = nuevos_pedidos
+                        historial_final.append(viejo_p)
+                        
+                st.session_state['sales_history'] = historial_final
                 update_user_data()
                 st.success("¡Historial actualizado permanentemente!")
                 time.sleep(1.2)
