@@ -4,6 +4,7 @@ import math
 import os
 import json
 import uuid
+import urllib.parse
 from datetime import datetime
 from fpdf import FPDF
 import hashlib
@@ -78,7 +79,7 @@ def update_user_data():
 
 
 # --- Generador de PDF ---
-def generar_pdf(empresa, cliente, fecha, detalle_colores, cantidad, horas, precio_total_sin_envio, precio_total, tipo_acabado, descuento, envio, moneda):
+def generar_pdf(empresa, cliente, fecha, detalle_colores, cantidad, tiempo_str, precio_total_sin_envio, precio_total, tipo_acabado, descuento, envio, moneda):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", 'B', 16)
@@ -93,7 +94,7 @@ def generar_pdf(empresa, cliente, fecha, detalle_colores, cantidad, horas, preci
     pdf.cell(0, 10, f"- Cantidad total de piezas: {cantidad}", ln=True)
     pdf.cell(0, 10, f"- Materiales y colores: {detalle_colores}", ln=True)
     pdf.cell(0, 10, f"- Acabado: {tipo_acabado}", ln=True)
-    pdf.cell(0, 10, f"- Tiempo estimado de produccion: {horas:,.1f} horas", ln=True)
+    pdf.cell(0, 10, f"- Tiempo estimado de produccion: {tiempo_str}", ln=True)
     pdf.ln(5)
     pdf.cell(0, 10, f"Subtotal: {moneda}{precio_total_sin_envio:,.0f}", ln=True)
     if descuento > 0:
@@ -112,7 +113,8 @@ def reset_cotizacion():
     st.session_state["in_nombre_cliente"] = ""
     st.session_state["in_cantidad_piezas"] = 1
     st.session_state["in_cantidad_total"] = 1
-    st.session_state["in_tiempo"] = 0.0
+    st.session_state["in_horas"] = 0
+    st.session_state["in_minutos"] = 0
     st.session_state["in_cambios"] = 0
     st.session_state["in_cant_colores"] = 1
     st.session_state["in_tipo_acabado"] = "Estándar (Directo de máquina)"
@@ -212,6 +214,46 @@ with st.sidebar:
         if st.session_state['filamentos']:
             df_filamentos = pd.DataFrame.from_dict(st.session_state['filamentos'], orient='index')
             st.dataframe(df_filamentos, use_container_width=True)
+            
+    with st.expander("👥 Gestor de Clientes (CRM)"):
+        with st.form("nuevo_cliente_form", clear_on_submit=True):
+            nombre_cliente_nuevo = st.text_input("Nombre del Cliente o Empresa")
+            telefono_cliente = st.text_input("Teléfono (ej: 5491123456789)", help="Código de país y área, sin el '+'. Solo números.")
+            ig_email_cliente = st.text_input("Instagram o Email")
+            notas_cliente = st.text_input("Notas / Preferencias")
+            
+            if st.form_submit_button("Guardar Cliente"):
+                if nombre_cliente_nuevo:
+                    cliente_existente = next((c for c in st.session_state['clients'] if c['nombre'] == nombre_cliente_nuevo), None)
+                    if cliente_existente:
+                        cliente_existente.update({"telefono": telefono_cliente, "contacto": ig_email_cliente, "notas": notas_cliente})
+                    else:
+                        st.session_state['clients'].append({
+                            "nombre": nombre_cliente_nuevo, "telefono": telefono_cliente, "contacto": ig_email_cliente, "notas": notas_cliente
+                        })
+                    update_user_data()
+                    st.success(f"¡{nombre_cliente_nuevo} guardado en el directorio!")
+                    st.rerun()
+                else:
+                    st.warning("Debes poner al menos el nombre.")
+                    
+        st.markdown("**Directorio:**")
+        if st.session_state['clients']:
+            df_clientes = pd.DataFrame(st.session_state['clients'])
+            for col in ["telefono", "contacto", "notas"]:
+                if col not in df_clientes.columns: df_clientes[col] = ""
+            
+            edited_clientes = st.data_editor(
+                df_clientes, 
+                use_container_width=True, 
+                num_rows="dynamic",
+                key="editor_clientes"
+            )
+            if st.button("💾 Guardar Cambios en CRM"):
+                st.session_state['clients'] = edited_clientes.to_dict('records')
+                update_user_data()
+                st.success("CRM actualizado permanentemente.")
+                st.rerun()
         
     with st.expander("📈 Historial, Agenda y Ganancias (Avanzado)"):
         historial = st.session_state.get('sales_history', [])
@@ -233,7 +275,7 @@ with st.sidebar:
                     "Estado": st.column_config.SelectboxColumn("Estado", options=["🔴 Pendiente", "🟡 Imprimiendo", "🟢 Entregado / Pagado"], required=True),
                     "Link STL": st.column_config.LinkColumn("Modelo 3D")
                 },
-                disabled=["ID", "Fecha", "Cliente", "Filamentos", "Cantidad Total", "Precio Total", "Tiempo Total (Horas)"],
+                disabled=["ID", "Fecha", "Cliente", "Filamentos", "Cantidad Total", "Precio Total", "Tiempo Total (Horas)", "Tiempo Total"],
                 use_container_width=True,
                 num_rows="dynamic", # Permite eliminar filas
                 key="editor_historial"
@@ -277,20 +319,12 @@ moneda = st.session_state.get('currency', '$')
 
 # Gestor de Clientes Inline
 nombres_clientes_guardados = [c['nombre'] for c in st.session_state.get('clients', [])]
-opciones_cliente = ["-- Cliente Casual --"] + nombres_clientes_guardados + ["➕ Agregar Nuevo Cliente..."]
+opciones_cliente = ["-- Cliente Casual --"] + nombres_clientes_guardados
 
-seleccion_cliente = st.selectbox("Seleccionar Cliente", opciones_cliente)
+seleccion_cliente = st.selectbox("Seleccionar Cliente (Desde el CRM)", opciones_cliente)
 
 if seleccion_cliente == "-- Cliente Casual --":
     nombre_cliente = st.text_input("Nombre del Cliente (Temporal)", key="in_nombre_cliente")
-elif seleccion_cliente == "➕ Agregar Nuevo Cliente...":
-    nombre_cliente = st.text_input("Nombre del Nuevo Cliente")
-    if st.button("💾 Guardar Cliente en Base de Datos"):
-        if nombre_cliente and nombre_cliente not in nombres_clientes_guardados:
-            st.session_state['clients'].append({"nombre": nombre_cliente})
-            update_user_data()
-            st.success("¡Cliente guardado!")
-            st.rerun()
 else:
     nombre_cliente = seleccion_cliente
 
@@ -299,7 +333,14 @@ with col1:
     cantidad_piezas = st.number_input("Cantidad de piezas en la cama", min_value=1, value=1, step=1, key="in_cantidad_piezas")
     cantidad_total_pedido = st.number_input("Cantidad total del pedido (piezas)", min_value=1, value=300, step=1, key="in_cantidad_total")
 with col2:
-    tiempo_impresion = st.number_input("Tiempo de impresión (horas decimales)", value=2.5, key="in_tiempo")
+    st.write("Tiempo de impresión por cama")
+    col_t1, col_t2 = st.columns(2)
+    with col_t1:
+        horas_impresion = st.number_input("Horas", min_value=0, value=2, step=1, key="in_horas")
+    with col_t2:
+        minutos_impresion = st.number_input("Minutos", min_value=0, max_value=59, value=30, step=1, key="in_minutos")
+    
+    tiempo_impresion = horas_impresion + (minutos_impresion / 60.0)
     cambios_color = st.number_input("Cambios de color manuales (por cama)", value=1, min_value=0, step=1, key="in_cambios")
 
 st.subheader("🛠️ Post-Procesado, Riesgos y Logística")
@@ -362,13 +403,17 @@ camas_necesarias = math.ceil(cantidad_total_pedido / cantidad_piezas)
 total_filamento_gramos = camas_necesarias * peso_pieza
 total_tiempo_horas = camas_necesarias * tiempo_impresion
 
+total_h = int(total_tiempo_horas)
+total_m = int(round((total_tiempo_horas - total_h) * 60))
+tiempo_formateado = f"{total_h}h {total_m}m"
+
 # Descuentos y envíos
 precio_total_sin_envio_desc = precio_unitario_base * cantidad_total_pedido
 valor_descontado = precio_total_sin_envio_desc * (descuento / 100)
 precio_total_pedido = (precio_total_sin_envio_desc - valor_descontado) + costo_envio
 precio_unitario_final = precio_total_pedido / cantidad_total_pedido if cantidad_total_pedido > 0 else 0
 
-st.info(f"**📊 Logística de Producción (Uso Interno)**\n- Camas totales a imprimir: {camas_necesarias}\n- Consumo total estimado: {total_filamento_gramos:,.1f} g ({(total_filamento_gramos/1000):,.2f} kg)\n- Tiempo total de máquina: {total_tiempo_horas:,.1f} horas")
+st.info(f"**📊 Logística de Producción (Uso Interno)**\n- Camas totales a imprimir: {camas_necesarias}\n- Consumo total estimado: {total_filamento_gramos:,.1f} g ({(total_filamento_gramos/1000):,.2f} kg)\n- Tiempo total de máquina: {tiempo_formateado}")
 
 for color_data in colores_data:
     st.write(f"🔹 Consumo total de {color_data['filamento']}: {color_data['gramos'] * camas_necesarias:,.1f} g")
@@ -396,7 +441,22 @@ if costo_envio > 0: resumen_whatsapp += f"\nEnvío: {moneda}{costo_envio:,.0f}"
 resumen_whatsapp += f"\n\nTotal del pedido: *{moneda}{precio_total_pedido:,.0f}*"
 resumen_whatsapp += f"\n\nAvísame si avanzamos para agendar la impresión. ¡Saludos!"
 
-st.text_area("Copia y pega este mensaje en WhatsApp:", value=resumen_whatsapp, height=250)
+st.text_area("Puedes modificar el mensaje antes de enviarlo:", value=resumen_whatsapp, height=250, key="whatsapp_text")
+
+telefono_destino = ""
+if seleccion_cliente != "-- Cliente Casual --":
+    for c in st.session_state['clients']:
+        if c['nombre'] == seleccion_cliente:
+            telefono_destino = c.get('telefono', "").strip()
+            break
+
+msg_codificado = urllib.parse.quote(st.session_state.get('whatsapp_text', resumen_whatsapp))
+if telefono_destino:
+    link_wa = f"https://wa.me/{telefono_destino}?text={msg_codificado}"
+    st.link_button(f"📲 Enviar al WhatsApp de {seleccion_cliente}", url=link_wa, type="primary", use_container_width=True)
+else:
+    link_wa = f"https://api.whatsapp.com/send?text={msg_codificado}"
+    st.link_button("📲 Compartir por WhatsApp (Seleccionar contacto)", url=link_wa, use_container_width=True)
 
 st.divider()
 col_btn1, col_btn2, col_btn3 = st.columns(3)
@@ -413,7 +473,7 @@ with col_btn1:
                 "Filamentos": nombres_filamentos,
                 "Link STL": link_stl,
                 "Cantidad Total": cantidad_total_pedido,
-                "Tiempo Total (Horas)": round(total_tiempo_horas, 2),
+                "Tiempo Total": tiempo_formateado,
                 "Precio Total": round(precio_total_pedido, 2),
                 "Estado": "🔴 Pendiente"
             }
@@ -432,7 +492,7 @@ with col_btn3:
             fecha=datetime.now().strftime("%d/%m/%Y"),
             detalle_colores=nombres_filamentos,
             cantidad=cantidad_total_pedido,
-            horas=total_tiempo_horas,
+            tiempo_str=tiempo_formateado,
             precio_total_sin_envio=precio_total_sin_envio_desc,
             precio_total=precio_total_pedido,
             tipo_acabado=tipo_acabado,
