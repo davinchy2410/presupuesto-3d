@@ -214,15 +214,20 @@ with st.sidebar:
                 st.rerun()
                 
         st.markdown("**Inventario Actual:**")
+        st.caption("💡 **Tip:** Haz doble clic en cualquier número de la tabla para editarlo como en Excel. Para borrar, selecciona la fila y presiona Suprimir (Delete).")
         if st.session_state['filamentos']:
             # Compatibilidad con datos anteriores
             for k, v in st.session_state['filamentos'].items():
                 if 'stock' not in v: v['stock'] = 0.0
 
             df_filamentos = pd.DataFrame.from_dict(st.session_state['filamentos'], orient='index')
-            edited_fil = st.data_editor(df_filamentos, use_container_width=True, key="editor_filamentos")
+            edited_fil = st.data_editor(df_filamentos, use_container_width=True, num_rows="dynamic", key="editor_filamentos")
             if st.button("💾 Guardar Cambios de Inventario"):
-                st.session_state['filamentos'] = edited_fil.to_dict(orient='index')
+                # Limpiar la fila vacía que agrega Streamlit al final
+                df_clean = edited_fil.dropna(how='all')
+                df_clean = df_clean[df_clean.index.notnull()]
+                df_clean = df_clean.dropna()
+                st.session_state['filamentos'] = df_clean.to_dict(orient='index')
                 update_user_data()
                 st.success("¡Stock actualizado!")
                 st.rerun()
@@ -262,7 +267,9 @@ with st.sidebar:
                 key="editor_clientes"
             )
             if st.button("💾 Guardar Cambios en CRM"):
-                st.session_state['clients'] = edited_clientes.to_dict('records')
+                df_clean = edited_clientes.dropna(how='all').fillna("")
+                df_clean = df_clean[df_clean['nombre'].astype(str).str.strip() != ""]
+                st.session_state['clients'] = df_clean.to_dict('records')
                 update_user_data()
                 st.success("CRM actualizado permanentemente.")
                 st.rerun()
@@ -296,7 +303,9 @@ with st.sidebar:
             col_act1, col_act2 = st.columns(2)
             with col_act1:
                 if st.button("💾 Guardar Cambios en Historial", use_container_width=True):
-                    st.session_state['sales_history'] = edited_df.to_dict('records')
+                    df_clean = edited_df.dropna(how='all')
+                    df_clean = df_clean[df_clean['ID'].notnull()]
+                    st.session_state['sales_history'] = df_clean.to_dict('records')
                     update_user_data()
                     st.success("¡Historial actualizado permanentemente!")
                     st.rerun()
